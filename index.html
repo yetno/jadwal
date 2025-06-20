@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jadwal Karyawan</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        // Mengimpor fungsi-fungsi Firebase yang diperlukan
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Mengambil konfigurasi Firebase dari lingkungan Canvas atau menggunakan default kosong
+        // Variabel __firebase_config, __app_id, dan __initial_auth_token disediakan oleh lingkungan Canvas
+        window.firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'; // ID aplikasi untuk path Firestore
+        window.initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null; // Token otentikasi awal
+
+        // Menginisialisasi aplikasi Firebase
+        window.app = initializeApp(window.firebaseConfig);
+        window.db = getFirestore(window.app);
+        window.auth = getAuth(window.app);
+        window.userId = null; // ID pengguna akan disetel setelah otentikasi
+
+        // Mendengarkan perubahan status otentikasi
+        onAuthStateChanged(window.auth, async (user) => {
+            if (user) {
+                // Jika pengguna sudah terotentikasi
+                window.userId = user.uid;
+                console.log("Terotentikasi dengan UID:", window.userId);
+            } else {
+                // Jika pengguna belum terotentikasi, coba masuk dengan token khusus atau secara anonim
+                if (window.initialAuthToken) {
+                    try {
+                        await signInWithCustomToken(window.auth, window.initialAuthToken);
+                        window.userId = window.auth.currentUser.uid;
+                        console.log("Masuk dengan token khusus. UID:", window.userId);
+                    } catch (error) {
+                        console.error("Error masuk dengan token khusus:", error);
+                        // Jika token khusus gagal, masuk secara anonim
+                        await signInAnonymously(window.auth);
+                        window.userId = window.auth.currentUser.uid;
+                        console.log("Masuk secara anonim karena error token khusus. UID:", window.userId);
+                    }
+                } else {
+                    // Jika tidak ada token khusus, masuk secara anonim
+                    await signInAnonymously(window.auth);
+                    window.userId = window.auth.currentUser.uid;
+                    console.log("Masuk secara anonim. UID:", window.userId);
+                }
+            }
+            // Setelah otentikasi, buat jadwal yang akan memuat dari Firestore
+            generateSchedule();
+        });
+
+        // Membuat fungsi Firestore dapat diakses secara global oleh skrip utama
+        window.firestore = {
+            getDoc: getDoc,
+            setDoc: setDoc,
+            doc: doc,
+            onSnapshot: onSnapshot,
+            collection: collection,
+        };
+    </script>
+    <style>
+        /* Gaya umum untuk body dan container */
+        body {
+            font-family: "Inter", sans-serif;
+            background-color: #f0f4f8;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .container {
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            max-width: 95%;
+            overflow-x: auto;
+            width: 100%;
+        }
+        /* Gaya tabel */
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #e2e8f0;
+            padding: 12px 15px;
+            text-align: center;
+            white-space: nowrap;
+            border-radius: 4px; /* Sudut membulat untuk sel */
+        }
+        th {
+            background-color: #edf2f7;
+            font-weight: 600;
+            color: #2d3748;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        td {
+            background-color: #ffffff;
+            color: #4a5568;
+        }
+        /* Gaya dropdown shift */
+        .shift-select {
+            width: 100%;
+            padding: 8px;
+            border-radius: 6px;
+            border: 1px solid #cbd5e0;
+            background-color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+            -webkit-appearance: none; /* Menghapus panah default pada select */
+            -moz-appearance: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='currentColor'%3E%3Cpath fill-rule='evenodd' d='M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z' clip-rule='evenodd'%3E%3C/path%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            background-size: 1.2em;
+        }
+        /* Gaya input tanggal */
+        .date-input-wrapper {
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .date-input-wrapper label {
+            font-weight: 600;
+            color: #2d3748;
+        }
+        .date-input-wrapper input[type="date"] {
+            padding: 10px 12px;
+            border: 1px solid #cbd5e0;
+            border-radius: 8px;
+            font-size: 16px;
+            color: #4a5568;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .date-input-wrapper input[type="date"]:focus {
+            border-color: #4299e1;
+            box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.5);
+        }
+
+        /* Warna latar belakang shift */
+        .bg-pagi {
+            background-color: #d1fae5 !important; /* Hijau */
+        }
+        .bg-libur {
+            background-color: #fee2e2 !important; /* Merah */
+        }
+        .bg-malam {
+            background-color: #bfdbfe !important; /* Biru Laut (lebih terang agar mudah dibaca) */
+        }
+        .bg-siang {
+            background-color: #fefcbf !important; /* Kuning */
+        }
+        .employee-name {
+            font-weight: 600;
+            text-align: left;
+            background-color: #f7fafc;
+            border-right: 1px solid #e2e8f0;
+            padding-left: 20px;
+        }
+        /* Gaya pesan loading */
+        #loading-message {
+            text-align: center;
+            color: #666;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-3xl font-bold text-center mb-6 text-gray-800">Jadwal Karyawan</h1>
+        <p class="text-sm text-center text-gray-500 mb-4" id="user-id-display"></p>
+
+        <div class="date-input-wrapper">
+            <label for="startDate">Mulai Dari Tanggal:</label>
+            <input type="date" id="startDate">
+        </div>
+
+        <div id="loading-message" class="hidden">Memuat jadwal...</div>
+
+        <table id="scheduleTable" class="rounded-lg shadow-sm">
+            <thead>
+                <tr id="dateHeaderRow">
+                    <th class="employee-name">Nama Karyawan</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Baris jadwal akan dibuat di sini oleh JavaScript -->
+            </tbody>
+        </table>
+    </div>
+
+    <script type="module">
+        // Mengakses variabel global Firebase dan fungsi-fungsi Firestore
+        const { db, auth, userId, firestore, appId } = window;
+        const { getDoc, setDoc, doc, onSnapshot, collection } = firestore;
+
+        const startDateInput = document.getElementById('startDate');
+        const scheduleTableBody = document.querySelector('#scheduleTable tbody');
+        const dateHeaderRow = document.getElementById('dateHeaderRow');
+        const loadingMessage = document.getElementById('loading-message');
+        const userIdDisplay = document.getElementById('user-id-display');
+
+        // Nama karyawan
+        const employees = ['Teddy', 'Yitno', 'Adi', 'Shafak', 'Putra'];
+        const otherEmployees = ['Yitno', 'Adi', 'Shafak', 'Putra']; // Karyawan yang jadwalnya bisa diedit
+        const shiftOptions = {
+            'Pagi': 'bg-pagi',
+            'Siang': 'bg-siang',
+            'Malam': 'bg-malam',
+            'Libur': 'bg-libur'
+        };
+
+        let currentDates = []; // Menyimpan tanggal yang sedang ditampilkan
+        let unsubscribeSnapshot = null; // Untuk menyimpan fungsi unsubscribe dari listener Firestore
+
+        // Fungsi untuk memformat tanggal sebagai YYYY-MM-DD untuk konsistensi di kunci Firestore
+        function formatDateForStorage(date) {
+            return date.toISOString().split('T')[0];
+        }
+
+        // Fungsi untuk memformat tanggal sebagai DD/MM untuk tampilan
+        function formatDateForDisplay(date) {
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0'); // Bulan dimulai dari 0
+            return `${day}/${month}`;
+        }
+
+        // Fungsi untuk mendapatkan nama hari dalam Bahasa Indonesia
+        function getDayName(date) {
+            const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+            return days[date.getDay()];
+        }
+
+        // Fungsi untuk menyimpan jadwal saat ini ke Firestore
+        async function saveSchedule() {
+            // Pastikan pengguna sudah terotentikasi sebelum menyimpan
+            if (!window.userId) {
+                console.warn("Pengguna tidak terotentikasi, tidak dapat menyimpan jadwal.");
+                return;
+            }
+
+            const scheduleDataToSave = {};
+            otherEmployees.forEach(employeeName => {
+                scheduleDataToSave[employeeName] = {};
+                const employeeRow = document.querySelector(`tr[data-employee="${employeeName}"]`);
+                if (employeeRow) {
+                    const selectElements = employeeRow.querySelectorAll('.shift-select');
+                    selectElements.forEach((select, index) => {
+                        const date = currentDates[index];
+                        if (date) {
+                            scheduleDataToSave[employeeName][formatDateForStorage(date)] = select.value;
+                        }
+                    });
+                }
+            });
+
+            // Mendapatkan referensi dokumen Firestore
+            const scheduleDocRef = doc(db, `artifacts/${appId}/users/${window.userId}/userSchedule/currentSchedule`);
+            try {
+                // Menyimpan data ke Firestore. Menggunakan { merge: true } agar tidak menimpa dokumen secara keseluruhan
+                await setDoc(scheduleDocRef, {
+                    startDate: startDateInput.value,
+                    scheduleData: scheduleDataToSave
+                }, { merge: true });
+                console.log("Jadwal berhasil disimpan ke Firestore.");
+            } catch (error) {
+                console.error("Gagal menyimpan jadwal ke Firestore:", error);
+            }
+        }
+
+        // Fungsi untuk mengatur listener real-time dari Firestore
+        function setupFirestoreListener() {
+            // Berhenti mendengarkan dari listener sebelumnya jika ada
+            if (unsubscribeSnapshot) {
+                unsubscribeSnapshot();
+            }
+
+            // Pastikan pengguna sudah terotentikasi sebelum mengatur listener
+            if (!window.userId) {
+                console.warn("Pengguna tidak terotentikasi, tidak dapat mengatur listener Firestore.");
+                return;
+            }
+
+            loadingMessage.classList.remove('hidden'); // Tampilkan pesan loading
+            const scheduleDocRef = doc(db, `artifacts/${appId}/users/${window.userId}/userSchedule/currentSchedule`);
+
+            // Mengatur listener onSnapshot untuk pembaruan real-time
+            unsubscribeSnapshot = onSnapshot(scheduleDocRef, (docSnap) => {
+                loadingMessage.classList.add('hidden'); // Sembunyikan pesan loading setelah data diterima
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    // Hanya terapkan data yang dimuat jika tanggal mulai cocok
+                    if (data.startDate === startDateInput.value) {
+                        applyLoadedScheduleToUI(data.scheduleData);
+                        console.log("Jadwal dimuat dari Firestore.");
+                    } else {
+                        console.log("Jadwal tersimpan di Firestore tidak cocok dengan tanggal mulai saat ini. Membuat ulang.");
+                        // Jika tanggal tidak cocok, simpan jadwal default/yang baru dibuat
+                        saveSchedule();
+                    }
+                } else {
+                    console.log("Tidak ada jadwal tersimpan di Firestore. Membuat jadwal baru.");
+                    // Jika tidak ada data, simpan jadwal default yang baru dibuat
+                    saveSchedule();
+                }
+            }, (error) => {
+                loadingMessage.classList.add('hidden'); // Sembunyikan pesan loading jika terjadi error
+                console.error("Kesalahan saat mendengarkan perubahan jadwal dari Firestore:", error);
+            });
+        }
+
+        // Fungsi untuk menerapkan data jadwal yang dimuat ke UI (dropdown)
+        function applyLoadedScheduleToUI(loadedScheduleData) {
+            otherEmployees.forEach(employeeName => {
+                const employeeRow = document.querySelector(`tr[data-employee="${employeeName}"]`);
+                if (employeeRow) {
+                    const selectElements = employeeRow.querySelectorAll('.shift-select');
+                    selectElements.forEach((select, index) => {
+                        const date = currentDates[index];
+                        if (date) {
+                            const dateKey = formatDateForStorage(date);
+                            // Set nilai dropdown dari data yang dimuat, atau default ke 'Libur'
+                            if (loadedScheduleData && loadedScheduleData[employeeName] && loadedScheduleData[employeeName][dateKey]) {
+                                select.value = loadedScheduleData[employeeName][dateKey];
+                            } else {
+                                select.value = 'Libur'; // Default jika tidak ada data tersimpan
+                            }
+                            applyShiftColor(select); // Terapkan warna setelah mengatur nilai
+                        }
+                    });
+                }
+            });
+        }
+
+        // Fungsi untuk menerapkan warna latar belakang berdasarkan pilihan shift
+        function applyShiftColor(selectElement) {
+            const selectedShift = selectElement.value;
+            const cell = selectElement.closest('td');
+            // Hapus semua kelas shift yang ada sebelumnya
+            for (const key in shiftOptions) {
+                cell.classList.remove(shiftOptions[key]);
+            }
+            // Tambahkan kelas baru
+            if (shiftOptions[selectedShift]) {
+                cell.classList.add(shiftOptions[selectedShift]);
+            }
+        }
+
+        // Fungsi untuk membuat (generate) jadwal
+        function generateSchedule() {
+            // Menampilkan ID pengguna
+            if (window.userId) {
+                userIdDisplay.textContent = `ID Pengguna: ${window.userId}`;
+            } else {
+                userIdDisplay.textContent = "Mengautentikasi...";
+            }
+
+            // Mendapatkan tanggal mulai yang dipilih, atau default ke tanggal saat ini
+            let selectedDate = startDateInput.value ? new Date(startDateInput.value + 'T00:00:00') : new Date();
+
+            // Hapus jadwal sebelumnya
+            scheduleTableBody.innerHTML = '';
+            dateHeaderRow.innerHTML = '<th class="employee-name">Nama Karyawan</th>'; // Reset header
+            currentDates = []; // Hapus tanggal sebelumnya
+
+            const daysToDisplay = 10;
+
+            // Membuat header tanggal
+            for (let i = 0; i < daysToDisplay; i++) {
+                const currentDate = new Date(selectedDate);
+                currentDate.setDate(selectedDate.getDate() + i);
+                currentDates.push(currentDate);
+
+                const th = document.createElement('th');
+                th.textContent = `${getDayName(currentDate)}, ${formatDateForDisplay(currentDate)}`;
+                dateHeaderRow.appendChild(th);
+            }
+
+            // Membuat baris untuk setiap karyawan
+            employees.forEach(employeeName => {
+                const row = document.createElement('tr');
+                row.setAttribute('data-employee', employeeName); // Menambahkan atribut data untuk seleksi mudah
+                const nameCell = document.createElement('td');
+                nameCell.textContent = employeeName;
+                nameCell.classList.add('employee-name');
+                row.appendChild(nameCell);
+
+                currentDates.forEach(date => {
+                    const cell = document.createElement('td');
+                    if (employeeName === 'Teddy') {
+                        // Jadwal tetap Teddy: Libur pada hari Minggu, Malam di hari lainnya
+                        const dayOfWeek = date.getDay(); // 0 = Minggu, 1 = Senin, ..., 6 = Sabtu
+                        let shift = '';
+                        if (dayOfWeek === 0) { // Minggu
+                            shift = 'Libur';
+                        } else { // Senin sampai Sabtu
+                            shift = 'Malam'; // Diubah dari Pagi ke Malam
+                        }
+                        cell.textContent = shift;
+                        cell.classList.add(shiftOptions[shift]);
+                    } else {
+                        // Dropdown untuk karyawan lain
+                        const select = document.createElement('select');
+                        select.classList.add('shift-select', 'rounded');
+                        select.onchange = () => saveSchedule(); // Simpan jadwal setiap kali shift diubah
+
+                        for (const shiftType in shiftOptions) {
+                            const option = document.createElement('option');
+                            option.value = shiftType;
+                            option.textContent = shiftType;
+                            select.appendChild(option);
+                        }
+                        select.value = 'Libur'; // Nilai default sebelum dimuat dari Firestore
+                        cell.appendChild(select);
+                        applyShiftColor(select); // Terapkan warna awal
+                    }
+                    row.appendChild(cell);
+                });
+                scheduleTableBody.appendChild(row);
+            });
+
+            // Setelah UI dibuat, atur listener Firestore untuk mengisi data
+            if (window.userId && window.db) {
+                setupFirestoreListener();
+            } else {
+                console.log("Menunggu otentikasi Firebase sebelum memuat data.");
+            }
+        }
+
+        // Mengatur tanggal awal ke tanggal 1, 11, atau 21, atau tanggal saat ini jika tidak ada yang cocok
+        document.addEventListener('DOMContentLoaded', () => {
+            const today = new Date();
+            let initialDay = today.getDate();
+            let year = today.getFullYear();
+            let month = today.getMonth(); // Bulan dimulai dari 0
+
+            if (initialDay >= 1 && initialDay <= 10) {
+                initialDay = 1;
+            } else if (initialDay >= 11 && initialDay <= 20) {
+                initialDay = 11;
+            } else {
+                initialDay = 21;
+            }
+
+            const initialDate = new Date(year, month, initialDay);
+            const formattedInitialDate = initialDate.toISOString().split('T')[0];
+            startDateInput.value = formattedInitialDate;
+            // Pembuatan jadwal akan dipicu oleh onAuthStateChanged setelah otentikasi Firebase
+        });
+
+        // Event listener untuk perubahan input tanggal
+        startDateInput.addEventListener('change', generateSchedule);
+    </script>
+</body>
+</html>
+
